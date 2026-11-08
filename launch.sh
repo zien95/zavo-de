@@ -52,7 +52,11 @@ case ${1:---session} in
         build_zavo
         export ZAVO_LAUNCHER="$project_dir/launch.sh" ZAVO_BUILD_DIR="$build_dir"
         export XDG_CURRENT_DESKTOP=sway XDG_SESSION_DESKTOP=zavo XDG_SESSION_TYPE=wayland
+        export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/snapd/desktop"
+        export XDG_DATA_DIRS="$XDG_DATA_DIRS:${XDG_DATA_HOME:-$HOME/.local/share}/flatpak/exports/share:/var/lib/flatpak/exports/share"
+        export GTK_THEME=Adwaita
         export WLR_BACKENDS=drm,libinput
+        export WLR_NO_HARDWARE_CURSORS="${WLR_NO_HARDWARE_CURSORS:-1}"
         exec dbus-run-session -- env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY -u XAUTHORITY \
             -u SWAYSOCK -u I3SOCK -u QT_QPA_PLATFORM sway --config "$project_dir/sway.conf"
         ;;

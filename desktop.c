@@ -8,9 +8,9 @@
 static const struct {
     const char *name;
     const char *icon;
-    const char *ids[4];
+    const char *ids[5];
 } shortcuts[] = {
-    { "Terminal", "utilities-terminal", { "org.kde.qmlkonsole" } },
+    { "Terminal", "utilities-terminal", { "org.kde.qmlkonsole", "org.kde.konsole", "foot" } },
     { "Files", "folder", { "org.kde.dolphin" } },
     { "Settings", "preferences-system", { NULL } },
     { "Software", "system-software-install", { "org.kde.discover" } },
@@ -85,11 +85,41 @@ static void free_window(gpointer data)
     ZavoWindow *window = data;
     g_free(window->title);
     g_free(window->description);
+    g_free(window->output);
     g_free(window);
 }
 
-static void collect_windows(JsonObject *node, GPtrArray *windows)
+static gboolean prefers_wide(const char *identifier)
 {
+    g_autofree char *name = identifier ? g_ascii_strdown(identifier, -1) : NULL;
+    return name && (strstr(name, "firefox") || strstr(name, "cubic") || strstr(name, "minecraft"));
+}
+
+static void collect_windows(JsonObject *node, GPtrArray *windows, ZavoLayout *layout,
+                            gboolean in_apps, int output_width, const char *output_name)
+{
+    if (!node)
+        return;
+    const char *type = json_object_get_string_member_with_default(node, "type", NULL);
+    if (g_strcmp0(type, "output") == 0) {
+        output_name = json_object_get_string_member_with_default(node, "name", NULL);
+        JsonObject *rect = json_object_get_object_member(node, "rect");
+        output_width = rect ? json_object_get_int_member_with_default(rect, "width", 0) : 0;
+    }
+    if (g_strcmp0(type, "workspace") == 0 &&
+        g_strcmp0(json_object_get_string_member_with_default(node, "name", NULL), "2:Windows") == 0) {
+        in_apps = TRUE;
+        layout->workspace_id = json_object_get_int_member_with_default(node, "id", 0);
+        JsonObject *rect = json_object_get_object_member(node, "rect");
+        if (rect) {
+            layout->width = output_width > 0 ? output_width :
+                json_object_get_int_member_with_default(rect, "width", 0);
+            layout->height = json_object_get_int_member_with_default(rect, "height", 0);
+        }
+    }
+    const gboolean focused = json_object_get_boolean_member_with_default(node, "focused", FALSE);
+    if (in_apps && focused)
+        layout->focused = TRUE;
     const char *app_id = json_object_get_string_member_with_default(node, "app_id", NULL);
     const char *shell = json_object_get_string_member_with_default(node, "shell", NULL);
     const gboolean wayland = g_strcmp0(shell, "xdg_shell") == 0;
@@ -99,6 +129,19 @@ static void collect_windows(JsonObject *node, GPtrArray *windows)
         const char *protocol = wayland ? "Wayland" : "XWayland";
         ZavoWindow *window = g_new0(ZavoWindow, 1);
         window->id = json_object_get_int_member_with_default(node, "id", 0);
+        window->output = g_strdup(output_name);
+        if (in_apps && layout->first_window == 0)
+            layout->first_window = window->id;
+        if (focused)
+            layout->focused_window = window->id;
+        const gboolean visible = json_object_get_boolean_member_with_default(node, "visible", FALSE);
+        if (in_apps && (focused || !layout->active_window || (visible && !layout->active_visible))) {
+            JsonObject *xprops = json_object_get_object_member(node, "window_properties");
+            const char *xclass = xprops ? json_object_get_string_member_with_default(xprops, "class", NULL) : NULL;
+            layout->active_window = window->id;
+            layout->active_visible = visible || focused;
+            layout->wide_default = prefers_wide(app_id ? app_id : xclass ? xclass : title);
+        }
         window->title = g_strdup(title && *title ? title : app_id ? app_id : "Untitled window");
         window->description = app_id ? g_strdup_printf("%s · %s", protocol, app_id)
                                      : g_strdup(protocol);
@@ -111,12 +154,13 @@ static void collect_windows(JsonObject *node, GPtrArray *windows)
         if (!children)
             continue;
         for (guint j = 0; j < json_array_get_length(children); ++j)
-            collect_windows(json_array_get_object_element(children, j), windows);
+            collect_windows(json_array_get_object_element(children, j), windows, layout, in_apps, output_width, output_name);
     }
 }
 
-GPtrArray *zavo_windows_parse(const char *data, gssize length)
+GPtrArray *zavo_windows_parse(const char *data, gssize length, ZavoLayout *layout)
 {
+    *layout = (ZavoLayout){0};
     g_autoptr(JsonParser) parser = json_parser_new();
     if (!json_parser_load_from_data(parser, data, length, NULL))
         return NULL;
@@ -124,12 +168,17 @@ GPtrArray *zavo_windows_parse(const char *data, gssize length)
     if (!JSON_NODE_HOLDS_OBJECT(root))
         return NULL;
     GPtrArray *windows = g_ptr_array_new_with_free_func(free_window);
-    collect_windows(json_node_get_object(root), windows);
+    collect_windows(json_node_get_object(root), windows, layout, FALSE, 0, NULL);
     return windows;
 }
 
-static gboolean sway_command(const char *command, gboolean allow_disconnect)
+enum { SWAY_COMMAND = 0, SWAY_GET_OUTPUTS = 3, SWAY_GET_TREE = 4, SWAY_GET_INPUTS = 100 };
+
+static gboolean sway_exchange(guint32 type, const char *command, gboolean allow_disconnect,
+                               char **reply, gsize *reply_size)
 {
+    *reply = NULL;
+    *reply_size = 0;
     const char *path = g_getenv("SWAYSOCK");
     if (!path || !*path)
         return FALSE;
@@ -142,11 +191,13 @@ static gboolean sway_command(const char *command, gboolean allow_disconnect)
     if (!connection)
         return FALSE;
 
-    /* Sway IPC command header: magic, little-endian length, then command type 0. */
+    /* Sway IPC header: magic, little-endian length and message type. */
     guint8 header[14] = { 'i', '3', '-', 'i', 'p', 'c' };
     const gsize length = strlen(command);
     guint32 encoded_length = GUINT32_TO_LE(length);
     memcpy(header + 6, &encoded_length, sizeof encoded_length);
+    const guint32 encoded_type = GUINT32_TO_LE(type);
+    memcpy(header + 10, &encoded_type, sizeof encoded_type);
     GIOStream *stream = G_IO_STREAM(connection);
     GOutputStream *output = g_io_stream_get_output_stream(stream);
     if (!g_output_stream_write_all(output, header, sizeof header, NULL, NULL, NULL) ||
@@ -162,15 +213,27 @@ static gboolean sway_command(const char *command, gboolean allow_disconnect)
         return FALSE;
     memcpy(&encoded_length, header + 6, sizeof encoded_length);
     const guint32 reply_length = GUINT32_FROM_LE(encoded_length);
-    if (reply_length == 0 || reply_length > 65536)
+    if (reply_length == 0 || reply_length > 4 * 1024 * 1024)
         return FALSE;
-    g_autofree char *reply = g_malloc(reply_length);
-    if (!g_input_stream_read_all(input, reply, reply_length, &received, NULL, NULL) ||
+    g_autofree char *buffer = g_malloc(reply_length);
+    if (!g_input_stream_read_all(input, buffer, reply_length, &received, NULL, NULL) ||
         received != reply_length)
         return FALSE;
+    *reply = g_steal_pointer(&buffer);
+    *reply_size = reply_length;
+    return TRUE;
+}
 
+static gboolean sway_command(const char *command, gboolean allow_disconnect)
+{
+    g_autofree char *reply = NULL;
+    gsize length;
+    if (!sway_exchange(SWAY_COMMAND, command, allow_disconnect, &reply, &length))
+        return FALSE;
+    if (allow_disconnect && !reply)
+        return TRUE;
     g_autoptr(JsonParser) parser = json_parser_new();
-    if (!json_parser_load_from_data(parser, reply, reply_length, NULL))
+    if (!json_parser_load_from_data(parser, reply, length, NULL))
         return FALSE;
     JsonNode *root = json_parser_get_root(parser);
     if (!JSON_NODE_HOLDS_ARRAY(root))
@@ -181,9 +244,171 @@ static gboolean sway_command(const char *command, gboolean allow_disconnect)
                                                        "success", FALSE);
 }
 
-static gboolean enter_apps_workspace(gboolean in_session)
+static GPtrArray *read_layout(ZavoLayout *layout)
 {
-    return !in_session || sway_command("workspace 2:Windows", FALSE);
+    g_autofree char *reply = NULL;
+    gsize length;
+    if (!sway_exchange(SWAY_GET_TREE, "", FALSE, &reply, &length))
+        return NULL;
+    return zavo_windows_parse(reply, length, layout);
+}
+
+gboolean zavo_apply_layout(const ZavoLayout *layout, gboolean wide)
+{
+    if (!layout->workspace_id || !layout->width || !layout->height)
+        return FALSE;
+    const int portrait_width = MAX(310, layout->height * 9 / 16);
+    const int gap = wide ? 0 : MAX(0, (layout->width - portrait_width) / 2);
+    g_autofree char *command = layout->first_window
+        ? g_strdup_printf("[con_id=%" G_GINT64_FORMAT "] gaps horizontal current set %d",
+                          layout->first_window, gap)
+        : g_strdup_printf("gaps horizontal current set %d", gap);
+    return (layout->first_window || layout->focused) && sway_command(command, FALSE);
+}
+
+gboolean zavo_set_cursor(const char *theme, int size)
+{
+    if (!theme || !*theme || size < 16 || size > 64 ||
+        strspn(theme, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.- ") != strlen(theme))
+        return FALSE;
+    g_autofree char *command = g_strdup_printf("seat * xcursor_theme \"%s\" %d", theme, size);
+    return sway_command(command, FALSE);
+}
+
+static JsonObject *built_in_output(JsonArray *outputs)
+{
+    JsonObject *first_active = NULL;
+    for (guint i = 0; i < json_array_get_length(outputs); ++i) {
+        JsonObject *output = json_array_get_object_element(outputs, i);
+        if (!json_object_get_boolean_member_with_default(output, "active", FALSE))
+            continue;
+        const char *name = json_object_get_string_member_with_default(output, "name", "");
+        if (g_str_has_prefix(name, "eDP") || g_str_has_prefix(name, "DSI") ||
+            g_str_has_prefix(name, "LVDS"))
+            return output;
+        if (!first_active)
+            first_active = output;
+    }
+    return first_active;
+}
+
+static JsonObject *read_output(JsonParser *parser)
+{
+    g_autofree char *reply = NULL;
+    gsize length;
+    if (!sway_exchange(SWAY_GET_OUTPUTS, "", FALSE, &reply, &length) ||
+        !json_parser_load_from_data(parser, reply, length, NULL))
+        return NULL;
+    JsonNode *root = json_parser_get_root(parser);
+    return JSON_NODE_HOLDS_ARRAY(root) ? built_in_output(json_node_get_array(root)) : NULL;
+}
+
+static void map_single_touchscreen(const char *output)
+{
+    g_autofree char *reply = NULL;
+    gsize length;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    if (!sway_exchange(SWAY_GET_INPUTS, "", FALSE, &reply, &length) ||
+        !json_parser_load_from_data(parser, reply, length, NULL))
+        return;
+    JsonNode *root = json_parser_get_root(parser);
+    if (!JSON_NODE_HOLDS_ARRAY(root))
+        return;
+    JsonArray *inputs = json_node_get_array(root);
+    const char *touchscreen = NULL;
+    for (guint i = 0; i < json_array_get_length(inputs); ++i) {
+        JsonObject *input = json_array_get_object_element(inputs, i);
+        if (!g_str_equal(json_object_get_string_member_with_default(input, "type", ""), "touch"))
+            continue;
+        if (touchscreen)
+            return;
+        touchscreen = json_object_get_string_member_with_default(input, "identifier", NULL);
+    }
+    if (touchscreen) {
+        g_autofree char *quoted = g_strescape(touchscreen, NULL);
+        g_autofree char *command = g_strdup_printf("input \"%s\" map_to_output %s", quoted, output);
+        sway_command(command, FALSE);
+    }
+}
+
+int zavo_current_rotation(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *output = read_output(parser);
+    if (!output)
+        return -1;
+    const char *transform = json_object_get_string_member_with_default(output, "transform", "normal");
+    return g_str_equal(transform, "90") ? 90 : g_str_equal(transform, "180") ? 180 :
+           g_str_equal(transform, "270") ? 270 : 0;
+}
+
+gboolean zavo_rotate_display(int rotation)
+{
+    if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)
+        return FALSE;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *output = read_output(parser);
+    if (!output)
+        return FALSE;
+    const char *name = json_object_get_string_member_with_default(output, "name", "");
+    if (!*name || strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") != strlen(name))
+        return FALSE;
+    g_autofree char *value = rotation ? g_strdup_printf("%d", rotation) : g_strdup("normal");
+    const gboolean changed = g_strcmp0(json_object_get_string_member_with_default(output, "transform", NULL),
+                                        value) != 0;
+    const gboolean focused = json_object_get_boolean_member_with_default(output, "focused", FALSE);
+    if (changed) {
+        g_autofree char *command = g_strdup_printf("output %s transform %s", name, value);
+        if (!sway_command(command, FALSE))
+            return FALSE;
+    }
+    map_single_touchscreen(name);
+    if (changed && focused) {
+        output = read_output(parser);
+        JsonObject *rect = output ? json_object_get_object_member(output, "rect") : NULL;
+        if (rect) {
+            const gint64 x = json_object_get_int_member_with_default(rect, "x", 0) +
+                            json_object_get_int_member_with_default(rect, "width", 0) / 2;
+            const gint64 y = json_object_get_int_member_with_default(rect, "y", 0) +
+                            json_object_get_int_member_with_default(rect, "height", 0) / 2;
+            g_autofree char *command = g_strdup_printf("seat - cursor set %" G_GINT64_FORMAT
+                                                      " %" G_GINT64_FORMAT, x, y);
+            sway_command(command, FALSE);
+        }
+    }
+    return TRUE;
+}
+
+gboolean zavo_show_home(void)
+{
+    return sway_command("workspace 1:Home", FALSE);
+}
+
+gint64 zavo_close_focused_window(const char *output)
+{
+    ZavoLayout layout;
+    g_autoptr(GPtrArray) windows = read_layout(&layout);
+    for (guint i = 0; windows && layout.focused_window && i < windows->len; ++i) {
+        const ZavoWindow *window = windows->pdata[i];
+        if (window->id == layout.focused_window &&
+            (!*output || g_strcmp0(output, window->output) == 0) &&
+            zavo_close_window(window->id))
+            return window->id;
+    }
+    return 0;
+}
+
+static gboolean enter_apps_workspace(gboolean in_session, gboolean wide)
+{
+    if (!in_session)
+        return TRUE;
+    if (!sway_command("workspace 2:Windows", FALSE))
+        return FALSE;
+    ZavoLayout layout;
+    g_autoptr(GPtrArray) windows = read_layout(&layout);
+    if (windows)
+        zavo_apply_layout(&layout, wide);
+    return TRUE;
 }
 
 static gboolean finish_launch(gboolean started, gboolean in_session, GError *error)
@@ -192,9 +417,70 @@ static gboolean finish_launch(gboolean started, gboolean in_session, GError *err
         if (error)
             g_printerr("%s\n", error->message);
         if (in_session)
-            sway_command("workspace 1:Home", FALSE);
+            zavo_show_home();
     }
     return started;
+}
+
+static char *snap_session_bus(void)
+{
+    g_autofree char *socket = g_build_filename(g_get_user_runtime_dir(), "bus", NULL);
+    if (!g_file_test(socket, G_FILE_TEST_EXISTS))
+        return NULL;
+    g_autofree char *escaped = g_dbus_address_escape_value(socket);
+    return g_strconcat("unix:path=", escaped, NULL);
+}
+
+static gboolean is_snap_app(GAppInfo *info)
+{
+    const char *executable = g_app_info_get_executable(info);
+    return (G_IS_DESKTOP_APP_INFO(info) &&
+            g_desktop_app_info_has_key(G_DESKTOP_APP_INFO(info), "X-SnapInstanceName")) ||
+           (executable && g_str_has_prefix(executable, "/snap/bin/"));
+}
+
+static gboolean launch_firefox(GAppInfo *info)
+{
+    ZavoLayout layout;
+    g_autoptr(GPtrArray) windows = read_layout(&layout);
+    for (guint i = 0; windows && i < windows->len; ++i) {
+        const ZavoWindow *window = windows->pdata[i];
+        if (g_str_has_prefix(window->description, "Wayland · firefox") ||
+            g_str_equal(window->description, "Wayland · org.mozilla.firefox"))
+            return zavo_focus_window(window->id);
+    }
+
+    const char *desktop_id = info ? g_app_info_get_id(info) : NULL;
+    const char *executable = info ? g_app_info_get_executable(info) : "firefox";
+    const gboolean snap = (info && is_snap_app(info)) ||
+        g_strcmp0(desktop_id, "firefox_firefox.desktop") == 0 ||
+        (!info && g_file_test("/snap/bin/firefox", G_FILE_TEST_IS_EXECUTABLE));
+    g_autofree char *basename = executable ? g_path_get_basename(executable) : NULL;
+    const gboolean flatpak = g_strcmp0(basename, "flatpak") == 0;
+    g_autofree char *profile = snap
+        ? g_build_filename(g_get_home_dir(), "snap", "firefox", "common", "zavo-profile", NULL)
+        : flatpak ? g_build_filename(g_get_home_dir(), ".var", "app", "org.mozilla.firefox",
+                                     "data", "zavo-profile", NULL)
+                  : g_build_filename(g_get_user_data_dir(), "zavo", "firefox-profile", NULL);
+
+    g_autofree char *fallback = !info && !snap ? g_find_program_in_path("firefox") : NULL;
+    if (!executable || (snap && !g_file_test("/snap/bin/firefox", G_FILE_TEST_IS_EXECUTABLE)) ||
+        (!info && !snap && !fallback) ||
+        g_mkdir_with_parents(profile, 0700) < 0 || !enter_apps_workspace(TRUE, TRUE))
+        return FALSE;
+
+    const char *native_args[] = { snap ? "/snap/bin/firefox" : executable,
+                                  "--no-remote", "--profile", profile, NULL };
+    const char *flatpak_args[] = { executable, "run", "org.mozilla.firefox",
+                                   "--no-remote", "--profile", profile, NULL };
+    g_auto(GStrv) env = g_environ_setenv(g_get_environ(), "MOZ_ENABLE_WAYLAND", "1", TRUE);
+    g_autofree char *bus = snap ? snap_session_bus() : NULL;
+    if (bus)
+        env = g_environ_setenv(env, "DBUS_SESSION_BUS_ADDRESS", bus, TRUE);
+    g_autoptr(GError) error = NULL;
+    const gboolean started = g_spawn_async(NULL, (char **)(flatpak ? flatpak_args : native_args),
+                                           env, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+    return finish_launch(started, TRUE, error);
 }
 
 gboolean zavo_launch_app(const GPtrArray *apps, const char *key, gboolean shortcut,
@@ -204,40 +490,29 @@ gboolean zavo_launch_app(const GPtrArray *apps, const char *key, gboolean shortc
         ZavoApp *app = g_ptr_array_index(apps, i);
         if (app->shortcut != shortcut || g_strcmp0(shortcut ? app->name : app->id, key) != 0)
             continue;
-        if (!app->info || !enter_apps_workspace(in_session))
+        if (shortcut && in_session && g_str_equal(key, "Firefox"))
+            return launch_firefox(app->info);
+        if (!app->info || !enter_apps_workspace(in_session, prefers_wide(app->id)))
             return FALSE;
+        g_autoptr(GAppLaunchContext) context = g_app_launch_context_new();
+        g_autofree char *bus = in_session && is_snap_app(app->info) ? snap_session_bus() : NULL;
+        if (bus)
+            g_app_launch_context_setenv(context, "DBUS_SESSION_BUS_ADDRESS", bus);
         g_autoptr(GError) error = NULL;
-        const gboolean started = g_app_info_launch(app->info, NULL, NULL, &error);
+        const gboolean started = g_app_info_launch(app->info, NULL, context, &error);
         return finish_launch(started, in_session, error);
     }
     return FALSE;
 }
 
-gboolean zavo_open_maps(const char *executable, gboolean in_session)
+gboolean zavo_open_builtin(const char *executable, const char *mode, gboolean in_session)
 {
-    if (!enter_apps_workspace(in_session))
+    if (!enter_apps_workspace(in_session, FALSE))
         return FALSE;
-    const char *argv[] = { executable, "--maps", in_session ? "-platform" : NULL, "wayland", NULL };
+    const char *argv[] = { executable, mode, in_session ? "-platform" : NULL, "wayland", NULL };
     g_autoptr(GError) error = NULL;
     const gboolean started = g_spawn_async(NULL, (char **)argv, NULL, 0, NULL, NULL, NULL, &error);
     return finish_launch(started, in_session, error);
-}
-
-gboolean zavo_open_setting(const char *name)
-{
-    const char *settings[][2] = {
-        { "Network", "kcm_networkmanagement" }, { "Bluetooth", "kcm_bluetooth" },
-        { "Sound", "kcm_pulseaudio" }, { "Display", "kcm_kscreen" },
-        { "Power", "kcm_powerdevilprofilesconfig" }, { "Notifications", "kcm_notifications" },
-    };
-    for (gsize i = 0; i < G_N_ELEMENTS(settings); ++i) {
-        if (g_strcmp0(name, settings[i][0]) == 0) {
-            const char *argv[] = { "kcmshell6", settings[i][1], NULL };
-            return g_spawn_async(NULL, (char **)argv, NULL, G_SPAWN_SEARCH_PATH,
-                                 NULL, NULL, NULL, NULL);
-        }
-    }
-    return FALSE;
 }
 
 gboolean zavo_focus_window(gint64 id)

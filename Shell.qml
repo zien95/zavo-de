@@ -12,7 +12,9 @@ ApplicationWindow {
 
     readonly property color backgroundColor: "#151126"
     readonly property color card: "#2b2342"
-    readonly property color mint: "#91f5c8"
+    readonly property color mint: desktop.appearance.accent
+    readonly property color accentInk: 0.2126 * mint.r + 0.7152 * mint.g + 0.0722 * mint.b > 0.48
+        ? "#122920" : "#f7f2ff"
     readonly property color ink: "#f7f2ff"
     readonly property color muted: "#cec2e2"
     property date now: new Date()
@@ -41,9 +43,10 @@ ApplicationWindow {
     }
 
     function launchPinned(name) {
-        if (name === "Settings")
-            selectPage(2)
-        else if (name === "Maps") {
+        if (name === "Settings") {
+            if (!desktop.openSettings())
+                notify("Couldn’t open Settings")
+        } else if (name === "Maps") {
             if (!desktop.openMaps())
                 notify("Couldn’t open Google Maps")
         } else if (!desktop.launchPinned(name)) {
@@ -65,6 +68,7 @@ ApplicationWindow {
         id: tile
         property bool selected: false
         property bool compact: false
+        property bool light: false
         property string subtitle: ""
         property color tileColor: shell.card
         implicitWidth: 76
@@ -74,10 +78,11 @@ ApplicationWindow {
 
         background: Rectangle {
             radius: 16
-            color: tile.selected ? shell.mint : tile.tileColor
+            color: tile.light ? (tile.selected ? "#dedee5" : "#f2f2f5") : tile.selected ? shell.mint : tile.tileColor
             opacity: tile.down ? 0.77 : 1
+            Behavior on color { ColorAnimation { duration: desktop.appearance.animations ? 150 : 0 } }
             border.width: tile.visualFocus ? 2 : 0
-            border.color: tile.selected ? "#14553b" : shell.mint
+            border.color: tile.light ? "#151515" : tile.selected ? "#14553b" : shell.mint
         }
         contentItem: ColumnLayout {
             spacing: 3
@@ -85,7 +90,8 @@ ApplicationWindow {
                 visible: tile.icon.name !== "" || tile.icon.source.toString() !== ""
                 source: tile.icon.source.toString() !== "" ? tile.icon.source
                         : tile.icon.name === "" ? ""
-                        : "image://theme/" + (tile.selected ? "active/" : "normal/") + tile.icon.name
+                        : "image://theme/" + (tile.light ? "dialog/" : tile.selected ? "active/" : "normal/")
+                          + tile.icon.name + "/" + shell.mint.toString().slice(1)
                 Layout.alignment: Qt.AlignHCenter
                 Layout.preferredWidth: tile.compact ? 19 : 25
                 Layout.preferredHeight: Layout.preferredWidth
@@ -96,7 +102,7 @@ ApplicationWindow {
             Text {
                 visible: tile.text !== ""
                 text: tile.text
-                color: tile.selected ? "#122920" : shell.ink
+                color: tile.light ? "#111111" : tile.selected ? shell.accentInk : shell.ink
                 font.pixelSize: tile.compact ? 12 : 14
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
@@ -106,7 +112,7 @@ ApplicationWindow {
             Text {
                 visible: tile.subtitle !== ""
                 text: tile.subtitle
-                color: shell.muted
+                color: tile.light ? "#353535" : tile.selected ? shell.accentInk : shell.muted
                 font.pixelSize: 11
                 elide: Text.ElideRight
                 horizontalAlignment: Text.AlignHCenter
@@ -116,11 +122,22 @@ ApplicationWindow {
     }
 
     Timer { interval: 1000; running: true; repeat: true; onTriggered: shell.now = new Date() }
-    Timer { id: messageTimer; interval: 4000; onTriggered: shell.feedback = "" }
+    Timer { id: messageTimer; interval: 6000; onTriggered: shell.feedback = "" }
+    Timer {
+        interval: pages.currentIndex === 2 ? 3500 : 12000
+        running: true
+        triggeredOnStart: true
+        repeat: true
+        onTriggered: desktop.refreshRadios()
+    }
+    Connections {
+        target: desktop
+        function onSystemError(error) { shell.notify(error) }
+    }
     Shortcut { sequence: "F11"; enabled: !desktop.inSession; onActivated: shell.toggleFullscreen() }
     Shortcut {
         sequence: "Escape"
-        enabled: !cameraPopup.opened && !leaveDialog.opened
+        enabled: !cameraPopup.opened && !powerDialog.opened && !confirmPower.opened
         onActivated: {
             if (shell.typing) {
                 shell.typing = false
@@ -160,6 +177,12 @@ ApplicationWindow {
                     color: shell.muted
                     font.pixelSize: 14
                 }
+                Text {
+                    visible: desktop.radios.battery >= 0
+                    text: (desktop.radios.battery ?? 0) + "%"
+                    color: shell.muted
+                    font.pixelSize: 14
+                }
                 Tile {
                     visible: !desktop.inSession
                     compact: true
@@ -179,12 +202,19 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
-                interactive: !shell.typing
+                interactive: !shell.typing && !quickDevices.adjusting
+                onCurrentIndexChanged: if (currentIndex === 2) desktop.refreshRadios()
 
                 Item {
                     Image {
                         anchors.fill: parent
                         source: "wallpaper.svg"
+                        fillMode: Image.PreserveAspectCrop
+                    }
+                    Image {
+                        anchors.fill: parent
+                        source: desktop.appearance.wallpaper
+                        visible: status === Image.Ready
                         fillMode: Image.PreserveAspectCrop
                     }
 
@@ -420,10 +450,15 @@ ApplicationWindow {
                                 font.weight: Font.DemiBold
                             }
                             Text {
-                                text: desktop.inSession ? "ZAVO SESSION" : "KUBUNTU SETTINGS"
+                                text: "CONNECTIVITY & POWER"
                                 color: shell.mint
                                 font.pixelSize: 12
                                 font.letterSpacing: 1.4
+                            }
+                            DeviceControls {
+                                id: quickDevices
+                                desktop: shell.desktop
+                                Layout.fillWidth: true
                             }
                             Item { Layout.fillHeight: true }
                             GridLayout {
@@ -432,32 +467,58 @@ ApplicationWindow {
                                 columnSpacing: 10
                                 rowSpacing: 10
                                 Repeater {
-                                    model: desktop.inSession ? [
-                                        { name: "Open windows", icon: "view-grid", action: () => shell.selectPage(1) },
-                                        { name: "Camera", icon: "camera-photo", action: () => cameraPopup.open() },
-                                        { name: "Home", icon: "go-home", action: () => shell.selectPage(0) },
-                                        { name: "End session", icon: "system-log-out", action: () => leaveDialog.open() }
-                                    ] : [
-                                        { name: "Network", icon: "network-wireless" },
-                                        { name: "Bluetooth", icon: "preferences-system-bluetooth" },
-                                        { name: "Sound", icon: "audio-volume-high" },
-                                        { name: "Display", icon: "preferences-desktop-display" },
-                                        { name: "Power", icon: "battery" },
-                                        { name: "Notifications", icon: "preferences-desktop-notification" }
+                                    model: [
+                                        { name: "Wi-Fi", key: "wifi", icon: "network-wireless" },
+                                        { name: "Bluetooth", key: "bluetooth", icon: "preferences-system-bluetooth" },
+                                        { name: "Mobile data", key: "mobile", icon: "network-mobile-100" },
+                                        { name: "GPS", key: "gps", icon: "mark-location" }
                                     ]
                                     Tile {
                                         required property var modelData
+                                        readonly property var radioState: desktop.radios[modelData.key]
                                         text: modelData.name
                                         icon.name: modelData.icon
+                                        selected: radioState === 1
+                                        subtitle: radioState === 1 ? "On" : radioState === 0 ? "Off"
+                                                : radioState === 2 ? "Hardware blocked"
+                                                : radioState === -1 ? "Unavailable" : "Checking…"
+                                        enabled: (radioState === 0 || radioState === 1) && !desktop.systemBusy
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 69
-                                        onClicked: {
-                                            if (modelData.action)
-                                                modelData.action()
-                                            else if (!desktop.openSetting(text))
-                                                shell.notify("That settings panel isn’t available")
-                                        }
+                                        Layout.preferredHeight: 82
+                                        onClicked: desktop.setRadio(modelData.key, radioState === 0)
                                     }
+                                }
+                                Tile {
+                                    text: "Power"
+                                    icon.name: "system-shutdown"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 74
+                                    enabled: !desktop.systemBusy
+                                    onClicked: powerDialog.open()
+                                }
+                                Tile {
+                                    text: "Settings"
+                                    icon.name: "preferences-system"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 74
+                                    onClicked: shell.launchPinned("Settings")
+                                }
+                                Tile {
+                                    text: "Rotation lock"
+                                    icon.name: "object-rotate-right"
+                                    visible: desktop.inSession
+                                    selected: desktop.appearance.rotationLock
+                                    subtitle: selected ? "Locked" : "Auto"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 74
+                                    onClicked: desktop.setRotationLock(!selected)
+                                }
+                                Tile {
+                                    text: "Camera"
+                                    icon.name: "camera-photo"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 74
+                                    onClicked: cameraPopup.open()
                                 }
                             }
                         }
@@ -519,6 +580,31 @@ ApplicationWindow {
         }
     }
 
+    component DialogSurface: Rectangle {
+        color: "#ffffff"
+        border.color: "#d6d6dc"
+        radius: 22
+    }
+
+    component DialogEnter: Transition {
+        NumberAnimation {
+            property: "opacity"
+            from: 0
+            to: 1
+            duration: desktop.appearance.animations ? 155 : 0
+            easing.type: Easing.OutCubic
+        }
+    }
+
+    component DialogExit: Transition {
+        NumberAnimation {
+            property: "opacity"
+            from: 1
+            to: 0
+            duration: desktop.appearance.animations ? 105 : 0
+        }
+    }
+
     Popup {
         id: cameraPopup
         objectName: "cameraPopup"
@@ -529,30 +615,60 @@ ApplicationWindow {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle {
-            color: shell.backgroundColor
-            border.color: shell.card
-            radius: 22
-        }
+        background: DialogSurface {}
+        enter: DialogEnter {}
+        exit: DialogExit {}
         contentItem: ColumnLayout {
             spacing: 10
             Text {
                 text: "Camera preview"
-                color: shell.ink
+                color: "#111111"
                 font.pixelSize: 22
                 font.weight: Font.DemiBold
             }
             Loader {
+                id: cameraLoader
                 active: cameraPopup.visible
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 sourceComponent: Item {
+                    id: cameraView
                     property string failure: ""
+                    property string captureStatus: ""
+                    property bool saving: false
+                    readonly property bool canTakePhoto: shutter.readyForCapture && !saving
+
+                    function takePhoto() {
+                        const path = desktop.photoPath()
+                        if (path === "") {
+                            captureStatus = "Couldn’t open your Pictures folder."
+                            return
+                        }
+                        saving = true
+                        captureStatus = "Saving…"
+                        if (shutter.captureToFile(path) < 0) {
+                            saving = false
+                            captureStatus = shutter.errorString || "Couldn’t take the photo."
+                        }
+                    }
+
                     MediaDevices { id: devices }
                     Rectangle { anchors.fill: parent; color: "#0c0a14"; radius: 12 }
                     VideoOutput { id: preview; anchors.fill: parent }
                     CaptureSession {
                         videoOutput: preview
+                        imageCapture: ImageCapture {
+                            id: shutter
+                            fileFormat: ImageCapture.JPEG
+                            onImageSaved: (requestId, fileName) => {
+                                cameraView.saving = false
+                                cameraView.captureStatus = "Saved in Pictures · " + fileName.split("/").pop()
+                            }
+                            onErrorOccurred: (requestId, error, errorString) => {
+                                cameraView.saving = false
+                                cameraView.captureStatus = errorString || "Couldn’t save the photo."
+                            }
+                        }
                         camera: Camera {
                             active: devices.videoInputs.length > 0 && failure === ""
                             cameraDevice: devices.defaultVideoInput
@@ -570,45 +686,120 @@ ApplicationWindow {
                     }
                 }
             }
-            Tile {
-                text: "Close camera"
+            Text {
+                visible: !!cameraLoader.item && cameraLoader.item.captureStatus !== ""
+                text: cameraLoader.item ? cameraLoader.item.captureStatus : ""
+                color: "#353535"
+                wrapMode: Text.Wrap
                 Layout.fillWidth: true
-                onClicked: cameraPopup.close()
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Tile {
+                    light: true
+                    text: "Close camera"
+                    Layout.fillWidth: true
+                    onClicked: cameraPopup.close()
+                }
+                Tile {
+                    light: true
+                    text: "Take photo"
+                    icon.name: "camera-photo"
+                    selected: true
+                    Layout.fillWidth: true
+                    enabled: cameraLoader.item ? cameraLoader.item.canTakePhoto : false
+                    onClicked: cameraLoader.item.takePhoto()
+                }
             }
         }
     }
 
     Dialog {
-        id: leaveDialog
+        id: powerDialog
         anchors.centerIn: Overlay.overlay
         width: Math.min(shell.width - 30, 400)
         modal: true
         focus: true
         padding: 15
-        background: Rectangle { color: shell.backgroundColor; radius: 22 }
+        background: DialogSurface {}
+        enter: DialogEnter {}
+        exit: DialogExit {}
         contentItem: ColumnLayout {
-            spacing: 14
+            spacing: 8
             Text {
-                text: "End Zavo session?"
-                color: shell.ink
-                font.pixelSize: 22
+                text: "Power"
+                color: "#111111"
+                font.pixelSize: 23
+                font.weight: Font.DemiBold
             }
+            Repeater {
+                model: [
+                    { name: "Suspend", key: "suspend", question: "Suspend this device?" },
+                    { name: "Restart", key: "reboot", question: "Restart this device?" },
+                    { name: "Shut down", key: "poweroff", question: "Shut down this device?" },
+                    { name: "End session", key: "logout", question: "End the Zavo session?" }
+                ]
+                Tile {
+                    light: true
+                    required property var modelData
+                    visible: modelData.key !== "logout" || desktop.inSession
+                    text: modelData.name
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 50
+                    onClicked: {
+                        confirmPower.action = modelData
+                        powerDialog.close()
+                        confirmPower.open()
+                    }
+                }
+            }
+            Tile {
+                light: true
+                text: "Cancel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                onClicked: powerDialog.close()
+            }
+        }
+    }
+
+    Dialog {
+        id: confirmPower
+        property var action: ({ name: "", key: "", question: "" })
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(shell.width - 30, 400)
+        modal: true
+        focus: true
+        padding: 15
+        background: DialogSurface {}
+        enter: DialogEnter {}
+        exit: DialogExit {}
+        contentItem: ColumnLayout {
+            spacing: 12
             Text {
-                text: "Open apps will close."
-                color: shell.muted
-                font.pixelSize: 15
+                text: confirmPower.action.question
+                color: "#111111"
+                font.pixelSize: 22
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
             }
             RowLayout {
                 Layout.fillWidth: true
-                Tile { text: "Cancel"; Layout.fillWidth: true; onClicked: leaveDialog.close() }
+                Tile { light: true; text: "Cancel"; Layout.fillWidth: true; onClicked: confirmPower.close() }
                 Tile {
-                    text: "End session"
+                    light: true
+                    text: confirmPower.action.name
                     selected: true
                     Layout.fillWidth: true
                     onClicked: {
-                        leaveDialog.close()
-                        if (!desktop.endSession())
-                            shell.notify("Couldn’t end the session")
+                        const key = confirmPower.action.key
+                        confirmPower.close()
+                        if (key === "logout") {
+                            if (!desktop.endSession())
+                                shell.notify("Couldn’t end the session")
+                        } else {
+                            desktop.power(key)
+                        }
                     }
                 }
             }
