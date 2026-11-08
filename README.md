@@ -1,20 +1,47 @@
 # Zavo DE
 
-Zavo DE is a touch-first Linux shell built with Qt 6 and QML. It has a swipeable
-home screen, an app drawer with a touch keyboard, and quick settings. It can run
-in a window on Kubuntu or start its own Wayland session with Sway.
+Zavo DE is a touch-first Qt 6 shell. QML defines the interface, C implements app
+launching and Wayland window management, and a C++ bridge connects the C backend
+to Qt. Sway runs the Wayland session directly on Linux display and input devices.
 
-## Install the runtime
+## Build and start
 
-On Ubuntu or Kubuntu 26.04:
+Install the build and runtime packages on Ubuntu or Kubuntu 26.04:
 
 ```bash
-sudo apt install python3-pyqt6.qtquick python3-gi gir1.2-glib-2.0 \
-  qt6-wayland qt6-svg-plugins qml6-module-qtquick-controls \
-  qml6-module-qtquick-layouts qml6-module-qtquick-window \
-  qml6-module-qtqml-workerscript qml6-module-qtmultimedia \
-  qml6-module-qtwebengine kf6-breeze-icon-theme
+sudo apt install build-essential cmake pkg-config libglib2.0-dev libjson-glib-dev \
+  qt6-base-dev qt6-declarative-dev qt6-webengine-dev qt6-wayland qt6-svg-plugins \
+  qml6-module-qtmultimedia kf6-breeze-icon-theme sway xwayland dbus-daemon
 ```
+
+Build from the checkout. This step also works from a terminal inside Plasma:
+
+```bash
+/bin/bash ./launch.sh --build
+```
+
+Press **Ctrl+Alt+F2** to reach a text console, log in as a regular user, then run
+this command from the checkout:
+
+```bash
+/bin/bash ./launch.sh
+```
+
+The default launcher requires a local text console. It starts a fresh Wayland
+session using the DRM and libinput backends. The command also accepts
+`--session` for scripts that used the previous launch syntax.
+
+Swipe between pages or tap the bottom buttons. Tap the search field to use the
+touch keyboard. In the Sway workspace bar, tap **Home** to return to the shell.
+The Apps page lists native Wayland and XWayland windows and lets you switch to or
+close them. To leave Zavo, use **Quick Settings → End session** or
+**Super+Shift+E**. Switch back to the virtual terminal where your original
+desktop is running.
+
+For a windowed preview inside another desktop, explicitly run
+`/bin/bash ./launch.sh --preview`.
+
+## Pinned apps
 
 The pinned shortcuts open installed applications. To add the requested apps on
 Ubuntu 26.04:
@@ -30,37 +57,7 @@ Camera uses Plasma Camera when installed, with a built-in live preview as a
 fallback. Photos prefers Koko and falls back to Gwenview. Notes opens KWrite.
 Google Maps opens in a separate Qt WebEngine window with a touch search field.
 
-## Preview on Kubuntu
-
-```bash
-/bin/bash ./launch.sh
-```
-
-Swipe between pages or tap the bottom buttons. Tap the search field to type with
-the on-screen keyboard. Use the button in the top right or F11 for fullscreen.
-
-## Start a standalone Wayland session
-
-```bash
-sudo apt install sway xwayland dbus-daemon
-```
-
-Log in as a regular user on a local TTY, change to the checkout, and run:
-
-```bash
-/bin/bash ./launch.sh --session
-```
-
-Sway handles the display and touchscreen. Home is always available in the
-compositor's workspace bar while ordinary app windows are open. The Apps page
-lists open windows by protocol and lets you switch to or close them. Wayland
-apps run natively and XWayland can host older X11 apps. To leave, open **Quick
-Settings → End session**. The keyboard shortcut is **Super+Shift+E**.
-
-You can also run the same command inside a Wayland desktop to test it in a nested
-compositor. Running windows in the Apps page belong to that Zavo session.
-
 ## License
 
-Zavo DE source is available under [GPL version 2 or later](LICENSE). PyQt6's
-GPLv3 terms apply when distributing a combined build that includes PyQt6.
+The Zavo DE source is available under [GPL version 2 or later](LICENSE). Qt and
+the other system dependencies retain their respective licenses.
