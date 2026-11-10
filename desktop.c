@@ -253,6 +253,13 @@ static GPtrArray *read_layout(ZavoLayout *layout)
     return zavo_windows_parse(reply, length, layout);
 }
 
+gboolean zavo_tablet_layout(const char *mode, int width, int height)
+{
+    if (g_strcmp0(mode, "tablet") == 0)
+        return TRUE;
+    return g_strcmp0(mode, "phone") != 0 && MIN(width, height) >= 660;
+}
+
 gboolean zavo_apply_layout(const ZavoLayout *layout, gboolean wide)
 {
     if (!layout->workspace_id || !layout->width || !layout->height)
@@ -398,7 +405,7 @@ gint64 zavo_close_focused_window(const char *output)
     return 0;
 }
 
-static gboolean enter_apps_workspace(gboolean in_session, gboolean wide)
+static gboolean enter_apps_workspace(gboolean in_session, gboolean wide, const char *layout_mode)
 {
     if (!in_session)
         return TRUE;
@@ -407,7 +414,7 @@ static gboolean enter_apps_workspace(gboolean in_session, gboolean wide)
     ZavoLayout layout;
     g_autoptr(GPtrArray) windows = read_layout(&layout);
     if (windows)
-        zavo_apply_layout(&layout, wide);
+        zavo_apply_layout(&layout, wide || zavo_tablet_layout(layout_mode, layout.width, layout.height));
     return TRUE;
 }
 
@@ -466,7 +473,7 @@ static gboolean launch_firefox(GAppInfo *info)
     g_autofree char *fallback = !info && !snap ? g_find_program_in_path("firefox") : NULL;
     if (!executable || (snap && !g_file_test("/snap/bin/firefox", G_FILE_TEST_IS_EXECUTABLE)) ||
         (!info && !snap && !fallback) ||
-        g_mkdir_with_parents(profile, 0700) < 0 || !enter_apps_workspace(TRUE, TRUE))
+        g_mkdir_with_parents(profile, 0700) < 0 || !enter_apps_workspace(TRUE, TRUE, NULL))
         return FALSE;
 
     const char *native_args[] = { snap ? "/snap/bin/firefox" : executable,
@@ -484,7 +491,7 @@ static gboolean launch_firefox(GAppInfo *info)
 }
 
 gboolean zavo_launch_app(const GPtrArray *apps, const char *key, gboolean shortcut,
-                         gboolean in_session)
+                         gboolean in_session, const char *layout_mode)
 {
     for (guint i = 0; i < apps->len; ++i) {
         ZavoApp *app = g_ptr_array_index(apps, i);
@@ -492,7 +499,7 @@ gboolean zavo_launch_app(const GPtrArray *apps, const char *key, gboolean shortc
             continue;
         if (shortcut && in_session && g_str_equal(key, "Firefox"))
             return launch_firefox(app->info);
-        if (!app->info || !enter_apps_workspace(in_session, prefers_wide(app->id)))
+        if (!app->info || !enter_apps_workspace(in_session, prefers_wide(app->id), layout_mode))
             return FALSE;
         g_autoptr(GAppLaunchContext) context = g_app_launch_context_new();
         g_autofree char *bus = in_session && is_snap_app(app->info) ? snap_session_bus() : NULL;
@@ -505,9 +512,10 @@ gboolean zavo_launch_app(const GPtrArray *apps, const char *key, gboolean shortc
     return FALSE;
 }
 
-gboolean zavo_open_builtin(const char *executable, const char *mode, gboolean in_session)
+gboolean zavo_open_builtin(const char *executable, const char *mode, gboolean in_session,
+                           const char *layout_mode)
 {
-    if (!enter_apps_workspace(in_session, FALSE))
+    if (!enter_apps_workspace(in_session, FALSE, layout_mode))
         return FALSE;
     const char *argv[] = { executable, mode, in_session ? "-platform" : NULL, "wayland", NULL };
     g_autoptr(GError) error = NULL;

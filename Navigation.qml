@@ -63,7 +63,9 @@ Window {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: bar.top
         anchors.bottomMargin: -28 * (1 - navigation.reveal)
-        width: Math.min(parent.width - 16, 460)
+        width: Math.min(parent.width - 16,
+            desktop.tabletLayout(navigation.screen.width, navigation.screen.height - navigation.barHeight,
+                                 desktop.appearance.layoutMode) ? 680 : 460)
         height: navigation.height - navigation.barHeight
         visible: navigation.showingSheet
         enabled: navigation.overview

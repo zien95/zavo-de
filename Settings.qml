@@ -10,6 +10,7 @@ ApplicationWindow {
     readonly property color accent: desktop.appearance.accent
     readonly property var themes: desktop.cursorThemes()
     readonly property var rotations: [0, 90, 180, 270]
+    readonly property var layoutModes: ["auto", "phone", "tablet"]
     property string feedback: ""
 
     title: "Zavo Settings"
@@ -31,9 +32,9 @@ ApplicationWindow {
         ScrollBar.vertical: ScrollBar {}
         ColumnLayout {
             id: form
-            x: 14
+            x: (section.width - width) / 2
             y: 12
-            width: section.width - 28
+            width: Math.min(section.width - 28, 720)
             spacing: 10
         }
     }
@@ -63,7 +64,9 @@ ApplicationWindow {
     }
 
     ColumnLayout {
-        anchors.fill: parent
+        width: Math.min(parent.width, 840)
+        height: parent.height
+        anchors.horizontalCenter: parent.horizontalCenter
         spacing: 8
         RowLayout {
             Layout.fillWidth: true
@@ -109,6 +112,15 @@ ApplicationWindow {
             Section {
                 fields: [
                     Heading { text: "Display & sound" },
+                    Label { text: "Interface layout"; color: "#cec2e2" },
+                    ComboBox {
+                        Accessible.name: "Interface layout"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 48
+                        model: ["Auto", "Phone", "Tablet"]
+                        currentIndex: Math.max(0, settings.layoutModes.indexOf(desktop.appearance.layoutMode))
+                        onActivated: index => desktop.saveAppearance("layoutMode", settings.layoutModes[index])
+                    },
                     DeviceControls {
                         id: displayControls
                         desktop: settings.desktop

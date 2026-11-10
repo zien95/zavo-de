@@ -20,6 +20,8 @@ ApplicationWindow {
     property date now: new Date()
     property string feedback: ""
     property bool typing: false
+    readonly property bool tabletLayout: width >= 600 &&
+        desktop.tabletLayout(width, height, desktop.appearance.layoutMode)
 
     title: "Zavo DE"
     visible: true
@@ -149,8 +151,7 @@ ApplicationWindow {
     }
 
     Rectangle {
-        id: phone
-        width: Math.min(parent.width, 520)
+        width: Math.min(parent.width, shell.tabletLayout ? 1100 : 520)
         height: parent.height
         anchors.horizontalCenter: parent.horizontalCenter
         color: shell.backgroundColor
@@ -238,11 +239,11 @@ ApplicationWindow {
                     }
 
                     Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
+                        anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
-                        anchors.margins: 14
-                        height: 77
+                        anchors.bottomMargin: 14
+                        width: Math.min(parent.width - 28, shell.tabletLayout ? 530 : parent.width)
+                        height: shell.tabletLayout ? 84 : 77
                         radius: 22
                         color: "#ec1a152c"
                         border.color: "#514565"
@@ -353,7 +354,9 @@ ApplicationWindow {
                                 }
                                 GridLayout {
                                     Layout.fillWidth: true
-                                    columns: appScroll.width >= 370 ? 4 : 3
+                                    columns: shell.tabletLayout
+                                             ? Math.max(5, Math.min(8, Math.floor(appScroll.width / 115)))
+                                             : appScroll.width >= 370 ? 4 : 3
                                     columnSpacing: 7
                                     rowSpacing: 7
                                     Repeater {
@@ -365,7 +368,7 @@ ApplicationWindow {
                                             icon.name: modelData.iconName
                                             compact: true
                                             Layout.preferredWidth: 68
-                                            Layout.preferredHeight: 65
+                                            Layout.preferredHeight: shell.tabletLayout ? 76 : 65
                                             Layout.fillWidth: true
                                             Layout.minimumWidth: 56
                                             onClicked: {
@@ -455,72 +458,82 @@ ApplicationWindow {
                                 font.pixelSize: 12
                                 font.letterSpacing: 1.4
                             }
-                            DeviceControls {
-                                id: quickDevices
-                                desktop: shell.desktop
-                                Layout.fillWidth: true
-                            }
-                            Item { Layout.fillHeight: true }
                             GridLayout {
                                 Layout.fillWidth: true
-                                columns: 2
-                                columnSpacing: 10
-                                rowSpacing: 10
-                                Repeater {
-                                    model: [
-                                        { name: "Wi-Fi", key: "wifi", icon: "network-wireless" },
-                                        { name: "Bluetooth", key: "bluetooth", icon: "preferences-system-bluetooth" },
-                                        { name: "Mobile data", key: "mobile", icon: "network-mobile-100" },
-                                        { name: "GPS", key: "gps", icon: "mark-location" }
-                                    ]
+                                columns: shell.tabletLayout && settingsColumn.width >= 850 ? 2 : 1
+                                columnSpacing: 28
+                                rowSpacing: 16
+                                DeviceControls {
+                                    id: quickDevices
+                                    desktop: shell.desktop
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignTop
+                                    Layout.preferredWidth: shell.tabletLayout ? 300 : 0
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignTop
+                                    Layout.preferredWidth: shell.tabletLayout ? 500 : 0
+                                    columns: shell.tabletLayout && settingsColumn.width < 850 ? 4 : 2
+                                    columnSpacing: 10
+                                    rowSpacing: 10
+                                    Repeater {
+                                        model: [
+                                            { name: "Wi-Fi", key: "wifi", icon: "network-wireless" },
+                                            { name: "Bluetooth", key: "bluetooth", icon: "preferences-system-bluetooth" },
+                                            { name: "Mobile data", key: "mobile", icon: "network-mobile-100" },
+                                            { name: "GPS", key: "gps", icon: "mark-location" }
+                                        ]
+                                        Tile {
+                                            required property var modelData
+                                            readonly property var radioState: desktop.radios[modelData.key]
+                                            text: modelData.name
+                                            icon.name: modelData.icon
+                                            selected: radioState === 1
+                                            subtitle: radioState === 1 ? "On" : radioState === 0 ? "Off"
+                                                    : radioState === 2 ? "Hardware blocked"
+                                                    : radioState === -1 ? "Unavailable" : "Checking…"
+                                            enabled: (radioState === 0 || radioState === 1) && !desktop.systemBusy
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 82
+                                            onClicked: desktop.setRadio(modelData.key, radioState === 0)
+                                        }
+                                    }
                                     Tile {
-                                        required property var modelData
-                                        readonly property var radioState: desktop.radios[modelData.key]
-                                        text: modelData.name
-                                        icon.name: modelData.icon
-                                        selected: radioState === 1
-                                        subtitle: radioState === 1 ? "On" : radioState === 0 ? "Off"
-                                                : radioState === 2 ? "Hardware blocked"
-                                                : radioState === -1 ? "Unavailable" : "Checking…"
-                                        enabled: (radioState === 0 || radioState === 1) && !desktop.systemBusy
+                                        text: "Power"
+                                        icon.name: "system-shutdown"
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 82
-                                        onClicked: desktop.setRadio(modelData.key, radioState === 0)
+                                        Layout.preferredHeight: 74
+                                        enabled: !desktop.systemBusy
+                                        onClicked: powerDialog.open()
+                                    }
+                                    Tile {
+                                        text: "Settings"
+                                        icon.name: "preferences-system"
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 74
+                                        onClicked: shell.launchPinned("Settings")
+                                    }
+                                    Tile {
+                                        text: "Rotation lock"
+                                        icon.name: "object-rotate-right"
+                                        visible: desktop.inSession
+                                        selected: desktop.appearance.rotationLock
+                                        subtitle: selected ? "Locked" : "Auto"
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 74
+                                        onClicked: desktop.setRotationLock(!selected)
+                                    }
+                                    Tile {
+                                        text: "Camera"
+                                        icon.name: "camera-photo"
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 74
+                                        onClicked: cameraPopup.open()
                                     }
                                 }
-                                Tile {
-                                    text: "Power"
-                                    icon.name: "system-shutdown"
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 74
-                                    enabled: !desktop.systemBusy
-                                    onClicked: powerDialog.open()
-                                }
-                                Tile {
-                                    text: "Settings"
-                                    icon.name: "preferences-system"
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 74
-                                    onClicked: shell.launchPinned("Settings")
-                                }
-                                Tile {
-                                    text: "Rotation lock"
-                                    icon.name: "object-rotate-right"
-                                    visible: desktop.inSession
-                                    selected: desktop.appearance.rotationLock
-                                    subtitle: selected ? "Locked" : "Auto"
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 74
-                                    onClicked: desktop.setRotationLock(!selected)
-                                }
-                                Tile {
-                                    text: "Camera"
-                                    icon.name: "camera-photo"
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 74
-                                    onClicked: cameraPopup.open()
-                                }
                             }
+                            Item { Layout.fillHeight: true }
                         }
                     }
                 }
@@ -540,6 +553,8 @@ ApplicationWindow {
             RowLayout {
                 visible: !shell.typing
                 Layout.fillWidth: true
+                Layout.maximumWidth: shell.tabletLayout ? 660 : Infinity
+                Layout.alignment: Qt.AlignHCenter
                 Layout.leftMargin: 12
                 Layout.rightMargin: 12
                 Layout.topMargin: 7
@@ -570,6 +585,8 @@ ApplicationWindow {
                 objectName: "keyboard"
                 visible: shell.typing
                 Layout.fillWidth: true
+                Layout.maximumWidth: shell.tabletLayout ? 720 : Infinity
+                Layout.alignment: Qt.AlignHCenter
                 Layout.margins: 8
                 field: search
                 onDone: {

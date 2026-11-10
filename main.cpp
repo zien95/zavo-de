@@ -159,7 +159,16 @@ public:
     bool systemBusy() const { return systemAction.state() != QProcess::NotRunning; }
     QVariantMap appearance() const { return appearanceValues; }
     bool canChangeLayout() const { return currentLayout.focused && currentLayout.active_window; }
-    bool wideLayout() const { return windowLayouts.value(currentLayout.active_window, currentLayout.wide_default); }
+    bool wideLayout() const
+    {
+        return windowLayouts.value(currentLayout.active_window, currentLayout.wide_default ||
+            tabletLayout(currentLayout.width, currentLayout.height, appearanceValues.value("layoutMode").toString()));
+    }
+
+    Q_INVOKABLE bool tabletLayout(int width, int height, const QString &mode) const
+    {
+        return zavo_tablet_layout(mode.toUtf8().constData(), width, height);
+    }
 
     Q_INVOKABLE void toggleLayout()
     {
@@ -207,6 +216,10 @@ public:
             stored = value.toInt();
         } else if (key == QStringLiteral("animations")) {
             stored = value.toBool();
+        } else if (key == QStringLiteral("layoutMode")) {
+            const QString mode = value.toString();
+            if (mode == "auto" || mode == "phone" || mode == "tablet")
+                stored = mode;
         }
         if (!stored.isValid()) {
             emit systemError(QStringLiteral("Couldn’t use that appearance setting"));
@@ -291,24 +304,24 @@ public:
 
     Q_INVOKABLE bool launch(const QString &id)
     {
-        return zavo_launch_app(apps, id.toUtf8().constData(), false, session);
+        return zavo_launch_app(apps, id.toUtf8().constData(), false, session, layoutMode().constData());
     }
 
     Q_INVOKABLE bool launchPinned(const QString &name)
     {
-        return zavo_launch_app(apps, name.toUtf8().constData(), true, session);
+        return zavo_launch_app(apps, name.toUtf8().constData(), true, session, layoutMode().constData());
     }
 
     Q_INVOKABLE bool openMaps()
     {
         return zavo_open_builtin(QFile::encodeName(QCoreApplication::applicationFilePath()).constData(),
-                                 "--maps", session);
+                                 "--maps", session, layoutMode().constData());
     }
 
     Q_INVOKABLE bool openSettings()
     {
         return zavo_open_builtin(QFile::encodeName(QCoreApplication::applicationFilePath()).constData(),
-                                 "--settings", session);
+                                 "--settings", session, layoutMode().constData());
     }
 
     Q_INVOKABLE bool focusWindow(qint64 id) { return session && zavo_focus_window(id); }
@@ -356,6 +369,8 @@ signals:
     void volumeAdjusted(int percent);
 
 private:
+    QByteArray layoutMode() const { return appearanceValues.value("layoutMode").toString().toUtf8(); }
+
     void reloadAppearance()
     {
         preferences.sync();
@@ -367,12 +382,17 @@ private:
             {"animations", preferences.value("animations", true).toBool()},
             {"rotationLock", preferences.value("rotationLock", false).toBool()},
             {"rotation", preferences.value("rotation", 0).toInt()},
+            {"layoutMode", preferences.value("layoutMode", "auto").toString()},
         };
         if (values == appearanceValues)
             return;
         const auto old = appearanceValues;
         appearanceValues = values;
         if (tracking) {
+            if (old.value("layoutMode") != values.value("layoutMode")) {
+                applyWindowLayout();
+                emit layoutChanged();
+            }
             if (old.value("cursorTheme") != values.value("cursorTheme") ||
                 old.value("cursorSize") != values.value("cursorSize"))
                 zavo_set_cursor(values.value("cursorTheme").toString().toUtf8().constData(),

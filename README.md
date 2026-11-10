@@ -33,7 +33,11 @@ session using the DRM and libinput backends. The command also accepts
 `--session` for scripts that used the previous launch syntax.
 
 Swipe between pages or tap the bottom buttons. Tap the search field to use the
-touch keyboard. Apps open in a centered portrait workspace on wide displays.
+touch keyboard. Choose **Settings → Display → Interface layout** to select
+**Auto**, **Phone**, or **Tablet**. Auto uses the tablet layout when both usable
+screen dimensions are at least 660 logical pixels. Tablet mode expands the app
+grid and Quick Settings, and opens apps wide in either orientation. Phone mode
+opens apps in a centered portrait workspace on wide displays.
 Firefox, Cubic, and Minecraft Launcher start wide so their desktop controls
 have room. The bottom gesture line stays available over fullscreen apps.
 
